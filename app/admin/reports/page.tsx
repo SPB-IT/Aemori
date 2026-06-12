@@ -113,7 +113,7 @@ const ReportPDF = ({
 
           {type === 'items'
             ? data.itemsList.map((item: any, index: number) => (
-                <View key={index} style={styles.row}>
+                <View key={index} style={styles.row} wrap={false}>
                   <Text style={[styles.cell, { width: '10%', textAlign: 'center' }]}>{index + 1}</Text>
                   <Text style={[styles.cell, { width: '15%' }]}>{item.branch_name}</Text>
                   <Text style={[styles.cell, { width: '35%' }]}>{item.name}</Text>
@@ -125,7 +125,7 @@ const ReportPDF = ({
                 </View>
               ))
             : data.branchSummaries.map((b: any, index: number) => (
-                <View key={index} style={styles.row}>
+                <View key={index} style={styles.row} wrap={false}>
                   <Text style={[styles.cell, { width: '10%', textAlign: 'center' }]}>{index + 1}</Text>
                   <Text style={[styles.cell, { width: '50%' }]}>{b.branchName}</Text>
                   <Text style={[styles.cell, { width: '20%', textAlign: 'center' }]}>{b.totalOrders}</Text>
@@ -135,7 +135,7 @@ const ReportPDF = ({
                 </View>
               ))}
 
-          <View style={styles.footerRow}>
+          <View style={styles.footerRow} wrap={false}>
             <Text style={[styles.cell, { width: type === 'items' ? '85%' : '80%', textAlign: 'right', paddingRight: 10, fontWeight: 'bold' }]}>
               รวมยอดสุทธิทั้งสิ้น
             </Text>
