@@ -136,6 +136,23 @@ const ReportPDF = ({
                 </View>
               ))}
 
+          {/* รายการที่ถูกปฏิเสธ (items mode) */}
+          {type === 'items' && data.rejectedItems && data.rejectedItems.length > 0 &&
+            data.rejectedItems.map((item: any, index: number) => (
+              <View key={`rej-${index}`} style={[styles.row, { backgroundColor: '#FFF5F5' }]} wrap={false}>
+                <Text style={[styles.cell, { width: '10%', textAlign: 'center', color: '#CC0000' }]}>—</Text>
+                <Text style={[styles.cell, { width: '15%', color: '#CC0000' }]}>{item.branch_name}</Text>
+                <Text style={[styles.cell, { width: '35%', color: '#CC0000' }]}>
+                  {item.name}{'\n'}
+                  <Text style={{ fontSize: 11, color: '#999' }}>⛔ ยกเลิก: {item.rejection_reason}</Text>
+                </Text>
+                <Text style={[styles.cell, { width: '10%', textAlign: 'center', color: '#CC0000' }]}>ยกเลิก</Text>
+                <Text style={[styles.cell, { width: '15%', textAlign: 'center', color: '#CC0000' }]}>{item.unit}</Text>
+                <Text style={[styles.cell, { width: '15%', textAlign: 'right', color: '#CC0000' }]}>—</Text>
+              </View>
+            ))
+          }
+
           <View style={styles.footerRow} wrap={false}>
             <Text style={[styles.cell, { width: type === 'items' ? '85%' : '80%', textAlign: 'right', paddingRight: 10, fontWeight: 'bold' }]}>
               รวมยอดสุทธิทั้งสิ้น
@@ -310,7 +327,7 @@ export default function AdminReportsPage() {
 
       const { data: details } = await supabase
         .from('requisition_details')
-        .select('requisition_id, quantity, price_at_time, items (name, unit)')
+        .select('requisition_id, quantity, price_at_time, rejection_reason, items (name, unit)')
         .in('requisition_id', reqIds);
 
       if (details) setRawDetails(details);
@@ -344,6 +361,7 @@ export default function AdminReportsPage() {
     let totalBudgetCounter = 0;
     const globalItemsMap: Record<string, ReportItemSummary> = {};
     const branchMap: Record<string, { totalOrders: number; totalBudget: number; items: Record<string, ReportItemSummary> }> = {};
+    const rejectedItemsList: { name: string; unit: string; branch_name: string; rejection_reason: string }[] = [];
 
     allBranches.forEach((b) => { branchMap[b] = { totalOrders: 0, totalBudget: 0, items: {} }; });
     filteredReqs.forEach((r) => { if (branchMap[r.branch_name]) branchMap[r.branch_name].totalOrders++; });
@@ -352,12 +370,25 @@ export default function AdminReportsPage() {
       if (!filteredReqIds.has(det.requisition_id)) return;
       const parentReq  = filteredReqs.find((r) => r.id === det.requisition_id);
       if (!parentReq)  return;
-
       const branchName = parentReq.branch_name  || 'ไม่ระบุสาขา';
       const itemName   = det.items?.name         || 'ไม่ทราบชื่อสินค้า';
       const itemUnit   = det.items?.unit         || 'ชิ้น';
       const qty        = det.quantity             || 0;
       const cost       = qty * (det.price_at_time || 0);
+
+      if (det.rejection_reason) {
+        // เก็บรายการที่ถูกปฏิเสธแยกสำหรับ PDF
+        const matchesBranchRej = selectedReportType !== 'items' || selectedBranch === 'all' || branchName === selectedBranch;
+        if (matchesBranchRej) {
+          rejectedItemsList.push({
+            name: itemName,
+            unit: itemUnit,
+            branch_name: branchName,
+            rejection_reason: det.rejection_reason,
+          });
+        }
+        return; // ข้ามรายการที่ถูกปฏิเสธ
+      }
 
       const matchesBranch = selectedReportType !== 'items' || selectedBranch === 'all' || branchName === selectedBranch;
       if (matchesBranch) {
@@ -386,6 +417,7 @@ export default function AdminReportsPage() {
       totalOrders:    filteredReqs.length,
       totalBudget:    totalBudgetCounter,
       itemsList:      Object.values(globalItemsMap),
+      rejectedItems:  rejectedItemsList,
       branchSummaries: Object.keys(branchMap).map((b) => ({
         branchName:  b,
         totalOrders: branchMap[b].totalOrders,
@@ -488,6 +520,7 @@ export default function AdminReportsPage() {
         const branchName = req.branch_name     || 'ไม่ระบุสาขา';
         if (selectedBranch !== 'all' && branchName !== selectedBranch) return;
 
+        const isRejected = !!det.rejection_reason;
         const dateStr  = req.created_at
           ? new Date(req.created_at).toLocaleDateString('th-TH', {
               year: 'numeric', month: 'short', day: 'numeric',
@@ -496,12 +529,25 @@ export default function AdminReportsPage() {
         const requester = req.requester_name   || '-';
         const itemName  = det.items?.name      || 'ไม่ทราบชื่อสินค้า';
         const itemUnit  = det.items?.unit      || 'ชิ้น';
-        const qty       = det.quantity          || 0;
+        const qty       = isRejected ? 0 : (det.quantity || 0);
         const cost      = qty * (det.price_at_time || 0);
         grandTotal     += cost;
 
-        const row = worksheet.addRow([dateStr, branchName, requester, itemName, qty, itemUnit, cost]);
+        const row = worksheet.addRow([
+          dateStr,
+          branchName,
+          requester,
+          isRejected ? `[ยกเลิก] ${itemName} — ${det.rejection_reason}` : itemName,
+          isRejected ? 'ยกเลิก' : qty,
+          itemUnit,
+          isRejected ? 0 : cost,
+        ]);
         styleDataRow(row, [5, 7]); // right-align qty and cost cols
+        if (isRejected) {
+          row.eachCell((cell) => {
+            cell.font = { color: { argb: 'FFCC0000' }, italic: true };
+          });
+        }
         // Format cost cell as number
         row.getCell(7).numFmt = '#,##0.00';
       });

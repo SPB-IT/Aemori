@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
 
@@ -16,6 +16,7 @@ interface RequisitionDetail {
   id: string;
   quantity: number;
   price_at_time: number;
+  rejection_reason: string | null;
   items: {
     name: string;
     unit: string;
@@ -39,14 +40,101 @@ export default function AdminRequisitionsPage() {
   const [currentPage, setCurrentPage]   = useState(1);
   const [totalCount, setTotalCount]     = useState(0);
 
-  // Summary counts (independent of current page / filter)
+  // Summary counts
   const [pendingCount, setPendingCount]   = useState(0);
   const [approvedCount, setApprovedCount] = useState(0);
   const [rejectedCount, setRejectedCount] = useState(0);
 
+  // Item-level rejection modal
+  const [rejectingDetail, setRejectingDetail] = useState<RequisitionDetail | null>(null);
+  const [rejectReason, setRejectReason]       = useState('');
+  const [savingReject, setSavingReject]       = useState(false);
+
+  // Print
+  const printRef = useRef<HTMLDivElement>(null);
+
+  const handlePrint = (req: Requisition, detailList: RequisitionDetail[]) => {
+    const win = window.open('', '_blank', 'width=800,height=900');
+    if (!win) return;
+    const dateStr = new Date(req.created_at).toLocaleDateString('th-TH', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+    const timeStr = new Date(req.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    const rows = detailList.map((d, i) => {
+      const rejected = !!d.rejection_reason;
+      return `
+        <tr style="${rejected ? 'background:#fff5f5;color:#aaa;' : ''}">
+          <td style="padding:8px 10px;border:1px solid #f9a8d4;text-align:center;">${i + 1}</td>
+          <td style="padding:8px 10px;border:1px solid #f9a8d4;${rejected ? 'text-decoration:line-through;' : ''}">${d.items?.name ?? '-'}</td>
+          <td style="padding:8px 10px;border:1px solid #f9a8d4;text-align:center;">${rejected ? '<span style="color:#e11d48;font-weight:bold;">ยกเลิก</span>' : d.quantity}</td>
+          <td style="padding:8px 10px;border:1px solid #f9a8d4;text-align:center;">${d.items?.unit ?? '-'}</td>
+          <td style="padding:8px 10px;border:1px solid #f9a8d4;text-align:right;">${rejected ? '—' : (d.price_at_time || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+          ${rejected ? `<td style="padding:8px 10px;border:1px solid #f9a8d4;color:#e11d48;font-size:12px;">⛔ ${d.rejection_reason}</td>` : '<td style="padding:8px 10px;border:1px solid #f9a8d4;"></td>'}
+        </tr>`;
+    }).join('');
+    const total = detailList
+      .filter(d => !d.rejection_reason)
+      .reduce((s, d) => s + (d.price_at_time || 0) * (d.quantity || 0), 0)
+      .toLocaleString('th-TH', { minimumFractionDigits: 2 });
+
+    win.document.write(`<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>ใบเบิกสินค้า - ${req.branch_name}</title>
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
+        * { font-family: 'Sarabun', sans-serif; box-sizing: border-box; }
+        body { margin: 30px 40px; color: #1e293b; font-size: 14px; }
+        h1 { font-size: 20px; font-weight: 700; text-align: center; margin: 0 0 4px; }
+        .sub { text-align: center; color: #db2777; font-size: 13px; margin-bottom: 20px; }
+        .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #fff0f6; border: 1px solid #fbcfe8; border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; }
+        .meta-label { color: #db2777; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+        .meta-value { font-weight: 600; margin-top: 2px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead tr { background: #fce7f3; }
+        thead th { padding: 9px 10px; border: 1px solid #f9a8d4; font-weight: 700; color: #be185d; }
+        .total-row td { background: #db2777; color: white; font-weight: 700; padding: 9px 10px; border: 1px solid #be185d; }
+        .sig { display: flex; justify-content: space-between; margin-top: 50px; }
+        .sig-box { width: 42%; text-align: center; font-size: 13px; }
+        .sig-line { border-top: 1px dashed #94a3b8; margin: 40px 10px 6px; }
+        @media print { body { margin: 15px 20px; } }
+      </style>
+    </head><body>
+      <h1>ใบเบิกสินค้า Aemori</h1>
+      <p class="sub">Supply Requisition Form</p>
+      <div class="meta">
+        <div><div class="meta-label">สาขา</div><div class="meta-value">${req.branch_name}</div></div>
+        <div><div class="meta-label">ผู้เบิก</div><div class="meta-value">${req.requester_name}</div></div>
+        <div><div class="meta-label">วันที่</div><div class="meta-value">${dateStr}</div></div>
+        <div><div class="meta-label">เวลา</div><div class="meta-value">${timeStr} น.</div></div>
+      </div>
+      <table>
+        <thead><tr>
+          <th style="width:5%;text-align:center;">ลำดับ</th>
+          <th>รายการสินค้า</th>
+          <th style="width:10%;text-align:center;">จำนวน</th>
+          <th style="width:10%;text-align:center;">หน่วย</th>
+          <th style="width:14%;text-align:right;">ราคา/หน่วย (฿)</th>
+          <th style="width:20%;">หมายเหตุ</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr class="total-row">
+          <td colspan="4" style="text-align:right;">รวมทั้งสิ้น</td>
+          <td style="text-align:right;">${total} ฿</td>
+          <td></td>
+        </tr></tfoot>
+      </table>
+      <div class="sig">
+        <div class="sig-box"><div class="sig-line"></div>ผู้เบิก<br/>(${req.requester_name})</div>
+        <div class="sig-box"><div class="sig-line"></div>ผู้จัดของ / ตรวจสอบ</div>
+        <div class="sig-box"><div class="sig-line"></div>ผู้อนุมัติ</div>
+      </div>
+      <script>window.onload = () => { window.print(); }<\/script>
+    </body></html>`);
+    win.document.close();
+  };
+
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  // ── Fetch summary counts (always full table) ────────────────────────────
   async function fetchCounts() {
     const [p, a, r] = await Promise.all([
       supabase.from('requisitions').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
@@ -58,10 +146,8 @@ export default function AdminRequisitionsPage() {
     setRejectedCount(r.count ?? 0);
   }
 
-  // ── Fetch one page of requisitions ─────────────────────────────────────
   const fetchRequisitions = useCallback(async (page = currentPage) => {
     setLoading(true);
-
     const from = (page - 1) * PAGE_SIZE;
     const to   = from + PAGE_SIZE - 1;
 
@@ -72,9 +158,7 @@ export default function AdminRequisitionsPage() {
       .range(from, to);
 
     if (filterStatus !== 'all') query = query.eq('status', filterStatus);
-
     if (searchTerm.trim()) {
-      // Supabase ilike filter: match either column
       query = query.or(
         `branch_name.ilike.%${searchTerm.trim()}%,requester_name.ilike.%${searchTerm.trim()}%`,
       );
@@ -87,25 +171,12 @@ export default function AdminRequisitionsPage() {
     setLoading(false);
   }, [currentPage, filterStatus, searchTerm]);
 
-  // Re-fetch whenever page / filter / search changes
-  useEffect(() => {
-    fetchRequisitions(currentPage);
-  }, [currentPage, filterStatus, searchTerm]);
-
-  // Fetch counts once on mount (and after status update)
+  useEffect(() => { fetchRequisitions(currentPage); }, [currentPage, filterStatus, searchTerm]);
   useEffect(() => { fetchCounts(); }, []);
 
-  // ── When filter or search changes, jump back to page 1 ─────────────────
-  const handleFilterChange = (s: typeof filterStatus) => {
-    setFilterStatus(s);
-    setCurrentPage(1);
-  };
-  const handleSearchChange = (v: string) => {
-    setSearchTerm(v);
-    setCurrentPage(1);
-  };
+  const handleFilterChange = (s: typeof filterStatus) => { setFilterStatus(s); setCurrentPage(1); };
+  const handleSearchChange = (v: string) => { setSearchTerm(v); setCurrentPage(1); };
 
-  // ── Group current page's rows by date ───────────────────────────────────
   const groupedRequisitions = requisitions.reduce((groups, req) => {
     const date = new Date(req.created_at).toLocaleDateString('th-TH', {
       day: 'numeric', month: 'long', year: 'numeric',
@@ -115,14 +186,13 @@ export default function AdminRequisitionsPage() {
     return groups;
   }, {} as Record<string, Requisition[]>);
 
-  // ── Modal helpers ───────────────────────────────────────────────────────
   const handleViewDetails = async (req: Requisition, mode: 'review' | 'view') => {
     setSelectedReq(req);
     setModalMode(mode);
     setLoadingDetails(true);
     const { data, error } = await supabase
       .from('requisition_details')
-      .select('id, quantity, price_at_time, items (name, unit, image_url)')
+      .select('id, quantity, price_at_time, rejection_reason, items (name, unit, image_url)')
       .eq('requisition_id', req.id);
     if (data) setDetails(data as unknown as RequisitionDetail[]);
     if (error) console.error(error);
@@ -143,14 +213,55 @@ export default function AdminRequisitionsPage() {
     }
   };
 
-  // ── Pagination helpers ──────────────────────────────────────────────────
+  // ── Item-level reject ───────────────────────────────────────────────────
+  const openRejectItemModal = (detail: RequisitionDetail) => {
+    setRejectingDetail(detail);
+    setRejectReason(detail.rejection_reason ?? '');
+  };
+
+  const handleSaveItemRejection = async () => {
+    if (!rejectingDetail) return;
+    if (!rejectReason.trim()) { alert('กรุณาระบุเหตุผล'); return; }
+    setSavingReject(true);
+    const { error } = await supabase
+      .from('requisition_details')
+      .update({ rejection_reason: rejectReason.trim() })
+      .eq('id', rejectingDetail.id);
+    if (error) {
+      alert(`เกิดข้อผิดพลาด: ${error.message}`);
+    } else {
+      // อัปเดต local state
+      setDetails((prev) =>
+        prev.map((d) =>
+          d.id === rejectingDetail.id ? { ...d, rejection_reason: rejectReason.trim() } : d
+        )
+      );
+      setRejectingDetail(null);
+      setRejectReason('');
+    }
+    setSavingReject(false);
+  };
+
+  const handleClearItemRejection = async (detail: RequisitionDetail) => {
+    if (!window.confirm('ยืนยันการยกเลิกการปฏิเสธรายการนี้?')) return;
+    const { error } = await supabase
+      .from('requisition_details')
+      .update({ rejection_reason: null })
+      .eq('id', detail.id);
+    if (!error) {
+      setDetails((prev) =>
+        prev.map((d) => d.id === detail.id ? { ...d, rejection_reason: null } : d)
+      );
+    }
+  };
+
+  // ── Pagination ──────────────────────────────────────────────────────────
   const goToPage = (p: number) => {
     if (p < 1 || p > totalPages) return;
     setCurrentPage(p);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  /** Build the visible page number buttons (at most 7 slots) */
   function pageNumbers(): (number | '…')[] {
     if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
     const pages: (number | '…')[] = [1];
@@ -163,7 +274,6 @@ export default function AdminRequisitionsPage() {
     return pages;
   }
 
-  // ── Status badge ────────────────────────────────────────────────────────
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'approved':
@@ -187,7 +297,8 @@ export default function AdminRequisitionsPage() {
     }
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  const rejectedCount_detail = details.filter((d) => !!d.rejection_reason).length;
+
   return (
     <div className="min-h-screen bg-linear-to-br from-pink-50 via-white to-rose-50/30 py-6 sm:py-8 px-3 sm:px-6 lg:px-8 text-slate-800">
       <div className="max-w-6xl mx-auto space-y-5">
@@ -281,96 +392,107 @@ export default function AdminRequisitionsPage() {
           </div>
         ) : (
           <>
-            {Object.entries(groupedRequisitions).map(([date, reqs]) => (
-              <div key={date} className="bg-white rounded-2xl shadow-sm shadow-pink-100/50 border border-pink-100 overflow-hidden">
-                <div className="px-5 py-3 bg-linear-to-r from-pink-50 to-rose-50/50 border-b border-pink-100 flex items-center gap-2">
-                  <span className="text-pink-300">🗓️</span>
-                  <span className="text-pink-500 font-black text-sm uppercase tracking-wider">{date}</span>
-                  <span className="ml-auto text-xs font-bold text-pink-300">{reqs.length} รายการ</span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <tbody className="divide-y divide-pink-50/80">
+            <div className="bg-white rounded-2xl shadow-sm shadow-pink-100/50 border border-pink-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="bg-pink-50/80 border-b border-pink-100 text-xs font-black text-pink-400 uppercase tracking-wider">
+                      <th className="px-4 py-3 w-20">เวลา</th>
+                      <th className="px-4 py-3">สาขา</th>
+                      <th className="px-4 py-3">ผู้เบิก</th>
+                      <th className="px-4 py-3 w-36">สถานะ</th>
+                      <th className="px-4 py-3 text-right w-56">จัดการ</th>
+                    </tr>
+                  </thead>
+                  {Object.entries(groupedRequisitions).map(([date, reqs]) => (
+                    <tbody key={date} className="divide-y divide-pink-50/80">
+                      {/* Date separator row */}
+                      <tr className="bg-linear-to-r from-pink-50 to-rose-50/50">
+                        <td colSpan={5} className="px-5 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-pink-300 text-xs">🗓️</span>
+                            <span className="text-pink-500 font-black text-xs uppercase tracking-wider">{date}</span>
+                            <span className="ml-auto text-xs font-bold text-pink-300">{reqs.length} รายการ</span>
+                          </div>
+                        </td>
+                      </tr>
                       {reqs.map((req) => (
-                        <tr key={req.id} className="hover:bg-pink-50/40 transition-colors group">
-                          <td className="p-4 text-sm font-semibold text-slate-400 w-24">
+                        <tr key={req.id} className="hover:bg-pink-50/40 transition-colors">
+                          <td className="px-4 py-3 text-sm font-semibold text-slate-400 whitespace-nowrap">
                             {new Date(req.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}
                           </td>
-                          <td className="p-4">
+                          <td className="px-4 py-3">
                             <span className="font-black text-slate-800">{req.branch_name}</span>
                           </td>
-                          <td className="p-4">
+                          <td className="px-4 py-3">
                             <span className="text-sm font-semibold text-slate-500">{req.requester_name}</span>
                           </td>
-                          <td className="p-4">{getStatusBadge(req.status)}</td>
-                          <td className="p-4 text-right">
-                            {req.status === 'pending' ? (
-                              <button
-                                onClick={() => handleViewDetails(req, 'review')}
-                                className="bg-linear-to-r from-pink-500 to-rose-400 text-white hover:from-pink-600 hover:to-rose-500 px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm shadow-pink-300/30 active:scale-95"
-                              >
-                                ตรวจสอบ →
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => handleViewDetails(req, 'view')}
-                                className="bg-pink-50 text-pink-400 hover:bg-pink-100 border border-pink-100 px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95"
-                              >
-                                {req.status === 'approved' ? '✅ รายละเอียด' : '❌ ดูข้อมูล'}
-                              </button>
-                            )}
+                          <td className="px-4 py-3">{getStatusBadge(req.status)}</td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              {req.status === 'approved' && (
+                                <button
+                                  onClick={async () => {
+                                    const { data } = await supabase
+                                      .from('requisition_details')
+                                      .select('id, quantity, price_at_time, rejection_reason, items (name, unit, image_url)')
+                                      .eq('requisition_id', req.id);
+                                    if (data) handlePrint(req, data as unknown as RequisitionDetail[]);
+                                  }}
+                                  className="inline-flex items-center gap-1.5 bg-slate-50 text-slate-500 hover:bg-slate-100 border border-slate-200 px-3 py-2 rounded-xl text-xs font-bold transition-all active:scale-95"
+                                >
+                                  🖨️ พิมพ์
+                                </button>
+                              )}
+                              {req.status === 'pending' ? (
+                                <button
+                                  onClick={() => handleViewDetails(req, 'review')}
+                                  className="bg-linear-to-r from-pink-500 to-rose-400 text-white hover:from-pink-600 hover:to-rose-500 px-4 py-2 rounded-xl text-sm font-bold transition-all shadow-sm shadow-pink-300/30 active:scale-95"
+                                >
+                                  ตรวจสอบ →
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleViewDetails(req, 'view')}
+                                  className="bg-pink-50 text-pink-400 hover:bg-pink-100 border border-pink-100 px-4 py-2 rounded-xl text-sm font-bold transition-all active:scale-95"
+                                >
+                                  {req.status === 'approved' ? '✅ รายละเอียด' : '❌ ดูข้อมูล'}
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
-                  </table>
-                </div>
+                  ))}
+                </table>
               </div>
-            ))}
+            </div>
 
-            {/* ── Pagination Bar ── */}
+            {/* Pagination */}
             <div className="bg-white border border-pink-100 rounded-2xl px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm shadow-pink-100/50">
-              {/* Info text */}
               <p className="text-xs font-semibold text-slate-400 shrink-0">
                 แสดง {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, totalCount)} จาก {totalCount.toLocaleString('th-TH')} รายการ
               </p>
-
-              {/* Buttons */}
               <div className="flex items-center gap-1.5 flex-wrap justify-center">
-                {/* Prev */}
-                <button
-                  onClick={() => goToPage(currentPage - 1)}
-                  disabled={currentPage === 1}
-                  className="px-3 py-2 rounded-xl text-xs font-bold border border-pink-100 bg-pink-50 text-pink-400 hover:bg-pink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
-                >
+                <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}
+                  className="px-3 py-2 rounded-xl text-xs font-bold border border-pink-100 bg-pink-50 text-pink-400 hover:bg-pink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95">
                   ← ก่อนหน้า
                 </button>
-
-                {/* Page numbers */}
                 {pageNumbers().map((p, idx) =>
                   p === '…' ? (
                     <span key={`ellipsis-${idx}`} className="px-2 text-slate-300 text-sm select-none">…</span>
                   ) : (
-                    <button
-                      key={p}
-                      onClick={() => goToPage(p as number)}
+                    <button key={p} onClick={() => goToPage(p as number)}
                       className={`w-9 h-9 rounded-xl text-xs font-bold transition-all active:scale-95 ${
                         currentPage === p
                           ? 'bg-linear-to-r from-pink-500 to-rose-400 text-white shadow-sm shadow-pink-300/30'
                           : 'border border-pink-100 bg-pink-50 text-pink-400 hover:bg-pink-100'
-                      }`}
-                    >
-                      {p}
-                    </button>
+                      }`}>{p}</button>
                   )
                 )}
-
-                {/* Next */}
-                <button
-                  onClick={() => goToPage(currentPage + 1)}
-                  disabled={currentPage === totalPages}
-                  className="px-3 py-2 rounded-xl text-xs font-bold border border-pink-100 bg-pink-50 text-pink-400 hover:bg-pink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
-                >
+                <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}
+                  className="px-3 py-2 rounded-xl text-xs font-bold border border-pink-100 bg-pink-50 text-pink-400 hover:bg-pink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95">
                   ถัดไป →
                 </button>
               </div>
@@ -428,36 +550,91 @@ export default function AdminRequisitionsPage() {
                     </div>
                   </div>
 
+                  {/* Item-level rejection notice */}
+                  {rejectedCount_detail > 0 && (
+                    <div className="flex items-center gap-2 bg-rose-50 border border-rose-100 rounded-xl px-4 py-2.5">
+                      <span className="text-rose-400 text-sm">⚠️</span>
+                      <p className="text-xs font-bold text-rose-500">
+                        มี {rejectedCount_detail} รายการที่ถูกปฏิเสธในใบเบิกนี้
+                      </p>
+                    </div>
+                  )}
+
                   <table className="w-full text-left text-sm border-collapse">
                     <thead>
                       <tr className="border-b-2 border-pink-100 text-pink-400">
                         <th className="py-2.5 px-2 font-black">รายการ</th>
-                        <th className="py-2.5 px-2 text-center font-black w-20">จำนวน</th>
-                        <th className="py-2.5 px-2 text-center font-black w-20">หน่วย</th>
-                        <th className="py-2.5 px-2 text-right font-black w-28">ราคา/หน่วย</th>
+                        <th className="py-2.5 px-2 text-center font-black w-16">จำนวน</th>
+                        <th className="py-2.5 px-2 text-center font-black w-16">หน่วย</th>
+                        <th className="py-2.5 px-2 text-right font-black w-24">ราคา/หน่วย</th>
+                        {modalMode === 'review' && (
+                          <th className="py-2.5 px-2 text-center font-black w-16">จัดการ</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-pink-50">
-                      {details.map((d) => (
-                        <tr key={d.id} className="text-slate-700 hover:bg-pink-50/50">
-                          <td className="py-3 px-2 font-semibold">{d.items?.name}</td>
-                          <td className="py-3 px-2 text-center font-black text-pink-600">{d.quantity}</td>
-                          <td className="py-3 px-2 text-center text-slate-500">{d.items?.unit}</td>
-                          <td className="py-3 px-2 text-right font-bold text-slate-700">
-                            {(d.price_at_time || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                          </td>
-                        </tr>
-                      ))}
+                      {details.map((d) => {
+                        const isRejected = !!d.rejection_reason;
+                        return (
+                          <tr key={d.id} className={`transition-colors ${isRejected ? 'bg-rose-50/60' : 'hover:bg-pink-50/50'}`}>
+                            <td className="py-3 px-2">
+                              <p className={`font-semibold ${isRejected ? 'line-through text-slate-400' : 'text-slate-700'}`}>
+                                {d.items?.name}
+                              </p>
+                              {isRejected && (
+                                <div className="flex items-start gap-1 mt-1">
+                                  <span className="text-rose-400 text-xs mt-px">⛔</span>
+                                  <p className="text-xs text-rose-500 font-semibold leading-tight">
+                                    {d.rejection_reason}
+                                  </p>
+                                </div>
+                              )}
+                            </td>
+                            <td className={`py-3 px-2 text-center font-black ${isRejected ? 'text-slate-300 line-through' : 'text-pink-600'}`}>
+                              {d.quantity}
+                            </td>
+                            <td className={`py-3 px-2 text-center ${isRejected ? 'text-slate-300' : 'text-slate-500'}`}>
+                              {d.items?.unit}
+                            </td>
+                            <td className={`py-3 px-2 text-right font-bold ${isRejected ? 'text-slate-300' : 'text-slate-700'}`}>
+                              {isRejected ? '—' : (d.price_at_time || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                            </td>
+                            {modalMode === 'review' && (
+                              <td className="py-3 px-2 text-center">
+                                {isRejected ? (
+                                  <button
+                                    onClick={() => handleClearItemRejection(d)}
+                                    title="ยกเลิกการปฏิเสธรายการนี้"
+                                    className="text-xs text-slate-400 hover:text-emerald-500 font-bold transition-colors px-1.5 py-1 rounded-lg hover:bg-emerald-50"
+                                  >
+                                    ↩️
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => openRejectItemModal(d)}
+                                    title="ปฏิเสธรายการนี้"
+                                    className="text-xs text-rose-400 hover:text-rose-600 font-bold transition-colors px-1.5 py-1 rounded-lg hover:bg-rose-50"
+                                  >
+                                    ⛔
+                                  </button>
+                                )}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                     <tfoot>
                       <tr className="border-t-2 border-pink-200 font-black text-slate-800">
-                        <td colSpan={3} className="py-3 px-2 text-right text-sm">รวมเป็นเงินทั้งสิ้น</td>
+                        <td colSpan={modalMode === 'review' ? 3 : 3} className="py-3 px-2 text-right text-sm">รวมเป็นเงินทั้งสิ้น</td>
                         <td className="py-3 px-2 text-right text-pink-600 text-base">
                           {details
+                            .filter((d) => !d.rejection_reason)
                             .reduce((sum, d) => sum + (d.price_at_time || 0) * (d.quantity || 0), 0)
                             .toLocaleString('th-TH', { minimumFractionDigits: 2 })}{' '}
                           ฿
                         </td>
+                        {modalMode === 'review' && <td />}
                       </tr>
                     </tfoot>
                   </table>
@@ -472,7 +649,7 @@ export default function AdminRequisitionsPage() {
                     onClick={() => handleUpdateStatus(selectedReq.id, 'rejected')}
                     className="flex-1 border border-pink-200 text-pink-500 py-3 rounded-xl text-sm font-bold hover:bg-pink-50 transition-all active:scale-95"
                   >
-                    ❌ ปฏิเสธ
+                    ❌ ปฏิเสธทั้งใบ
                   </button>
                   <button
                     onClick={() => handleUpdateStatus(selectedReq.id, 'approved')}
@@ -482,12 +659,20 @@ export default function AdminRequisitionsPage() {
                   </button>
                 </>
               ) : selectedReq.status === 'approved' ? (
-                <button
-                  onClick={() => handleUpdateStatus(selectedReq.id, 'pending')}
-                  className="w-full bg-amber-400 text-white py-3 rounded-xl text-sm font-bold hover:bg-amber-500 transition-all active:scale-95"
-                >
-                  ↩️ ยกเลิกการอนุมัติ
-                </button>
+                <>
+                  <button
+                    onClick={() => handleUpdateStatus(selectedReq.id, 'pending')}
+                    className="flex-1 bg-amber-400 text-white py-3 rounded-xl text-sm font-bold hover:bg-amber-500 transition-all active:scale-95"
+                  >
+                    ↩️ ยกเลิกการอนุมัติ
+                  </button>
+                  <button
+                    onClick={() => handlePrint(selectedReq, details)}
+                    className="flex-1 bg-slate-700 text-white py-3 rounded-xl text-sm font-bold hover:bg-slate-800 transition-all active:scale-95"
+                  >
+                    🖨️ พิมพ์ใบเบิก
+                  </button>
+                </>
               ) : (
                 <button
                   onClick={() => setSelectedReq(null)}
@@ -496,6 +681,60 @@ export default function AdminRequisitionsPage() {
                   ปิดหน้าต่าง
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Item Rejection Modal ── */}
+      {rejectingDetail && (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full shadow-2xl border border-rose-100 overflow-hidden">
+            <div className="bg-linear-to-r from-rose-500 to-pink-500 text-white p-5">
+              <h3 className="font-black text-base">⛔ ปฏิเสธรายการสินค้า</h3>
+              <p className="text-sm text-rose-100 mt-1 font-semibold">{rejectingDetail.items?.name}</p>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-black text-rose-400 uppercase tracking-widest mb-2">
+                  เหตุผลที่ปฏิเสธ <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  placeholder="เช่น สินค้าหมด / ไม่มีในสต็อก / รอสั่งเพิ่ม..."
+                  rows={3}
+                  className="w-full px-4 py-3 border border-rose-200 rounded-xl text-sm font-medium text-slate-700 placeholder:text-slate-300 outline-none focus:ring-2 focus:ring-rose-300 focus:border-rose-400 transition-all resize-none"
+                  autoFocus
+                />
+              </div>
+              {/* Quick reason chips */}
+              <div className="flex flex-wrap gap-2">
+                {['สินค้าหมด', 'ไม่มีในสต็อก', 'รอสั่งเพิ่ม', 'สินค้าเลิกผลิต'].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setRejectReason(r)}
+                    className="px-3 py-1.5 rounded-full text-xs font-bold border border-rose-100 bg-rose-50 text-rose-400 hover:bg-rose-100 transition-all"
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="p-4 bg-rose-50/40 border-t border-rose-100 flex gap-2">
+              <button
+                onClick={() => { setRejectingDetail(null); setRejectReason(''); }}
+                className="flex-1 border border-rose-100 text-slate-400 py-3 rounded-xl text-sm font-bold hover:bg-slate-50 transition-all"
+              >
+                ยกเลิก
+              </button>
+              <button
+                onClick={handleSaveItemRejection}
+                disabled={savingReject || !rejectReason.trim()}
+                className="flex-1 bg-linear-to-r from-rose-500 to-pink-500 text-white py-3 rounded-xl text-sm font-bold hover:from-rose-600 hover:to-pink-600 transition-all shadow-md shadow-rose-200 disabled:opacity-50 active:scale-95"
+              >
+                {savingReject ? 'กำลังบันทึก...' : '⛔ ยืนยันปฏิเสธ'}
+              </button>
             </div>
           </div>
         </div>
